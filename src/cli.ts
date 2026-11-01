@@ -1,12 +1,20 @@
-// External-verifier contract (Faz D slice 1): reads one OEVP conformance
+// External-verifier contract (Faz D slice 2): reads one OEVP conformance
 // vector input.json and prints the observation JSON for the runner.
-// Supported action: "verify". Any other action reports unsupported
-// (fail-closed, never a silent pass).
+// Supported actions: "verify", "inspect_receipt", "reverify" (fail-closed
+// prefix of the pipeline: self-digest, then package digest). Pack actions
+// are slice 3. Any unsupported action reports exit_code null (never a
+// silent pass).
 //
-// Usage: node dist/cli.js <input.json>
+// Usage: node src/cli.ts <input.json>
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { verifyBundle, type TrustedKey } from "./verify.ts";
+import {
+  evaluateReceiptTrust,
+  isDsseEnvelope,
+  parseDsse,
+} from "./dsse.ts";
+import { sha256Formatted, unwrapReceipt, verifyReceiptSelfDigest } from "./receipt.ts";
 
 interface VectorInput {
   vector_id: string;
@@ -27,10 +35,88 @@ function emit(payload: Record<string, unknown>): void {
   process.stdout.write(JSON.stringify(payload) + "\n");
 }
 
+function emitError(exc: unknown): void {
+  emit({
+    vector_id: (typeof vector === "object" && vector?.vector_id) || null,
+    exit_code: null,
+    result: {},
+    error: exc instanceof Error ? exc.message : String(exc),
+  });
+  process.exit(0);
+}
+
 const inputPath = resolve(process.argv[2] ?? "");
 const vector: VectorInput = JSON.parse(readFileSync(inputPath, "utf8"));
 // input.json lives at <repo>/conformance/vectors/<id>/input.json.
 const repoRoot = resolve(dirname(inputPath), "..", "..", "..");
+
+if (vector.action === "inspect_receipt") {
+  const receiptData = JSON.parse(
+    readFileSync(resolve(repoRoot, vector.inputs["receipt"] ?? ""), "utf8"),
+  ) as Record<string, unknown>;
+  const verifierKeys: TrustedKey[] | null = vector.inputs["verifier_keys"]
+    ? JSON.parse(readFileSync(resolve(repoRoot, vector.inputs["verifier_keys"]), "utf8"))
+    : null;
+  const { receipt, isDsse } = unwrapReceipt(receiptData);
+  const digestValid = verifyReceiptSelfDigest(receipt);
+  let cryptoValid = false;
+  let isTrustedSigner = false;
+  if (isDsse && isDsseEnvelope(receiptData)) {
+    // Mirrors trust.py evaluate_receipt_trust: trust evaluation only against
+    // caller-supplied keys; no keys -> cannot be trusted.
+    const evaluation = evaluateReceiptTrust(parseDsse(receiptData), verifierKeys);
+    cryptoValid = evaluation.crypto_valid;
+    isTrustedSigner = evaluation.is_trusted;
+  }
+  emit({
+    vector_id: vector.vector_id,
+    exit_code: digestValid ? 0 : 1,
+    result: { receipt_digest_valid: digestValid, crypto_valid: cryptoValid, is_trusted_signer: isTrustedSigner },
+  });
+  process.exit(0);
+}
+
+if (vector.action === "reverify") {
+  // Slice 2 implements the fail-closed prefix of the pipeline (self-digest,
+  // then package digest). If both match, fresh execution is slice 3 and is
+  // reported as unsupported rather than guessed.
+  try {
+    const receiptData = JSON.parse(
+      readFileSync(resolve(repoRoot, vector.inputs["receipt"] ?? ""), "utf8"),
+    ) as Record<string, unknown>;
+    const { receipt } = unwrapReceipt(receiptData);
+    const mismatch = (): void => {
+      emit({
+        vector_id: vector.vector_id,
+        exit_code: 2,
+        result: {
+          reverification_result: "MISMATCH",
+          package_digest_match: false,
+          profile_digest_match: false,
+          fresh_checks: [],
+        },
+      });
+      process.exit(0);
+    };
+    if (!verifyReceiptSelfDigest(receipt)) {
+      mismatch();
+    }
+    const packageBytes = readFileSync(resolve(repoRoot, vector.inputs["package"] ?? ""));
+    const recordedPackageDigest = (receipt["package"] as Record<string, unknown> | undefined)?.["digest"];
+    if (sha256Formatted(packageBytes) !== String(recordedPackageDigest)) {
+      mismatch();
+    }
+    emit({
+      vector_id: vector.vector_id,
+      exit_code: null,
+      result: {},
+      unsupported: "package and self-digest matched; fresh re-execution pipeline is not implemented in slice 2",
+    });
+    process.exit(0);
+  } catch (exc) {
+    emitError(exc);
+  }
+}
 
 if (vector.action !== "verify") {
   emit({
@@ -41,16 +127,6 @@ if (vector.action !== "verify") {
   });
   process.exit(0);
 }
-
-const emitUnsupported = (exc: unknown): void => {
-  emit({
-    vector_id: vector.vector_id,
-    exit_code: null,
-    result: {},
-    error: exc instanceof Error ? exc.message : String(exc),
-  });
-  process.exit(0);
-};
 
 try {
   const zipBytes = readFileSync(resolve(repoRoot, vector.inputs["package"] ?? ""));
