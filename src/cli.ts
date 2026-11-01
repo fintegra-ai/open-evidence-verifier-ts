@@ -1,8 +1,9 @@
-// External-verifier contract (Faz D slice 2): reads one OEVP conformance
-// vector input.json and prints the observation JSON for the runner.
-// Supported actions: "verify", "inspect_receipt", "reverify" (fail-closed
-// prefix of the pipeline: self-digest, then package digest). Pack actions
-// are slice 3. Any unsupported action reports exit_code null (never a
+// External-verifier contract (Faz D): reads one OEVP conformance vector
+// input.json and prints the observation JSON for the runner. Supported
+// actions: "verify", "inspect_receipt", "reverify" (fail-closed prefix:
+// self-digest then package digest), and the pack family "pack_verify" /
+// "pack_replay" / "pack_receipt_verify" (integrity + replay safety; rules
+// are NEVER re-executed). Anything else reports exit_code null (never a
 // silent pass).
 //
 // Usage: node src/cli.ts <input.json>
@@ -15,6 +16,8 @@ import {
   parseDsse,
 } from "./dsse.ts";
 import { sha256Formatted, unwrapReceipt, verifyReceiptSelfDigest } from "./receipt.ts";
+import { computePackDigest, replayPackDir, verifyPackDir } from "./pack.ts";
+import { join } from "node:path";
 
 interface VectorInput {
   vector_id: string;
@@ -111,6 +114,72 @@ if (vector.action === "reverify") {
       exit_code: null,
       result: {},
       unsupported: "package and self-digest matched; fresh re-execution pipeline is not implemented in slice 2",
+    });
+    process.exit(0);
+  } catch (exc) {
+    emitError(exc);
+  }
+}
+
+if (vector.action === "pack_verify") {
+  try {
+    const keys: TrustedKey[] | null = vector.inputs["pack_verifier_keys"]
+      ? JSON.parse(readFileSync(resolve(repoRoot, vector.inputs["pack_verifier_keys"]), "utf8"))
+      : null;
+    const verification = verifyPackDir(resolve(repoRoot, vector.inputs["pack"] ?? ""), keys);
+    // Mirror cmd_pack_verify: invalid pack -> 1; pinned keys with an
+    // invalid/unknown signature -> 2; otherwise 0.
+    let exit_code = 0;
+    if (verification.overall !== "PACK_VALID") exit_code = 1;
+    else if (keys && verification.signature_state !== "SIGNATURE_VALID" && verification.signature_state !== "SIGNATURE_NOT_PRESENT") exit_code = 2;
+    emit({
+      vector_id: vector.vector_id,
+      exit_code,
+      result: { overall: verification.overall, signature_state: verification.signature_state },
+    });
+    process.exit(0);
+  } catch (exc) {
+    emitError(exc);
+  }
+}
+
+if (vector.action === "pack_replay") {
+  try {
+    const pin: Record<string, unknown> | null = vector.inputs["pin"]
+      ? JSON.parse(readFileSync(resolve(repoRoot, vector.inputs["pin"]), "utf8"))
+      : null;
+    const replay = replayPackDir(resolve(repoRoot, vector.inputs["pack"] ?? ""), pin, null);
+    const exitMap: Record<string, number> = { REPLAY_OK: 0, PACK_INVALID: 1 };
+    emit({
+      vector_id: vector.vector_id,
+      exit_code: exitMap[replay.replay_status] ?? 2,
+      result: { replay_status: replay.replay_status },
+    });
+    process.exit(0);
+  } catch (exc) {
+    emitError(exc);
+  }
+}
+
+if (vector.action === "pack_receipt_verify") {
+  try {
+    const receipt = JSON.parse(
+      readFileSync(resolve(repoRoot, vector.inputs["pack_receipt"] ?? ""), "utf8"),
+    ) as Record<string, unknown>;
+    const digestValid = verifyReceiptSelfDigest(receipt);
+    let packBinding = "PACK_BINDING_MISMATCH";
+    if (vector.inputs["pack"]) {
+      const manifest = JSON.parse(
+        readFileSync(join(resolve(repoRoot, vector.inputs["pack"]), "manifest.json"), "utf8"),
+      ) as Record<string, unknown>;
+      const recomputed = computePackDigest(manifest);
+      packBinding = recomputed === String(receipt["pack_digest"]) ? "PACK_BINDING_MATCH" : "PACK_BINDING_MISMATCH";
+    }
+    const overall = digestValid && packBinding === "PACK_BINDING_MATCH" ? "RECEIPT_VALID" : "RECEIPT_INVALID";
+    emit({
+      vector_id: vector.vector_id,
+      exit_code: overall === "RECEIPT_VALID" ? 0 : 1,
+      result: { overall, receipt_digest_valid: digestValid, pack_binding: packBinding },
     });
     process.exit(0);
   } catch (exc) {

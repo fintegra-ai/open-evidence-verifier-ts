@@ -66,10 +66,10 @@ test("verify action on the signed fixture matches the OEVP contract", () => {
 });
 
 test("unsupported actions report fail-closed, never a silent pass", () => {
-  const out = runCli({ action: "pack_replay", package: `${FIX}valid-signed.zip` });
+  const out = runCli({ action: "time_travel", package: `${FIX}valid-signed.zip` });
   assert.equal(out.exit_code, null);
   assert.equal(out.result && Object.keys(out.result).length, 0);
-  assert.match(out.unsupported, /pack_replay/);
+  assert.match(out.unsupported, /time_travel/);
 });
 
 test("reverify with a missing receipt reports the error contract, not a crash", () => {
