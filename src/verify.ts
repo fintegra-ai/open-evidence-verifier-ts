@@ -1,0 +1,190 @@
+// Offline OEPT bundle verifier, slice 1 (Faz D): implements the OEPT-1.0
+// draft pipeline steps 1-10 against the Python reference semantics, mapped
+// onto OEVP check results (see open-evidence-verification
+// src/oev/adapters/oept.py). Trust roots are caller-supplied only.
+import { createHash, verify as cryptoVerify, createPublicKey } from "node:crypto";
+import { readCentralDirectory, ZipFormatError, type ZipMember } from "./zip.ts";
+
+export type TerminalStatus =
+  | "UNSAFE_ARCHIVE"
+  | "MALFORMED_BUNDLE"
+  | "UNSUPPORTED_SPEC_VERSION"
+  | "MISSING_FILE"
+  | "UNEXPECTED_FILE"
+  | "HASH_MISMATCH"
+  | "SIGNATURE_INVALID"
+  | "SIGNATURE_KEY_UNKNOWN"
+  | "VALID_SIGNED"
+  | "VALID_UNSIGNED";
+
+export interface TrustedKey {
+  key_id: string;
+  public_key_pem: string;
+}
+
+export interface VerifierOptions {
+  maxArchiveBytes: number;
+  maxEntries: number;
+  maxTotalUncompressedBytes: number;
+  maxSingleMemberBytes: number;
+}
+
+export const DEFAULT_OPTIONS: VerifierOptions = {
+  maxArchiveBytes: 512 * 1024 * 1024,
+  maxEntries: 10_000,
+  maxTotalUncompressedBytes: 512 * 1024 * 1024,
+  maxSingleMemberBytes: 64 * 1024 * 1024,
+};
+
+export interface VerifyResult {
+  status: TerminalStatus;
+  notes: string[];
+  bundleSpecVersion: string | null;
+}
+
+const SIGNATURE_MEMBER = "signatures/manifest.sig";
+const SPEC_VERSION = "oept-bundle/0.1";
+
+function memberNameIsSafe(name: string): string | null {
+  if (!name) return "empty archive member name";
+  if (name.includes("\x00")) return `NUL byte in archive member name: ${name}`;
+  if (name.startsWith("/") || name.includes("\\")) return `absolute or backslash archive path: ${name}`;
+  if (name.length > 2 && name[1] === ":") return `Windows drive path in archive: ${name}`;
+  const parts = name.split("/");
+  if (parts.some((p) => p === "" || p === "." || p === "..")) {
+    return `traversal or empty segment in archive path: ${name}`;
+  }
+  if (name.length > 512) return `archive member path too long: ${name}`;
+  return null;
+}
+
+function isSymlink(member: ZipMember): boolean {
+  return ((member.externalAttr >> 16) & 0o170000) === 0o120000;
+}
+
+export function verifyBundle(
+  zipBytes: Buffer,
+  trustedKeys: TrustedKey[] | null,
+  options: VerifierOptions = DEFAULT_OPTIONS,
+): VerifyResult {
+  const notes: string[] = [];
+  const done = (status: TerminalStatus, bundleSpecVersion: string | null = null): VerifyResult => ({
+    status,
+    notes,
+    bundleSpecVersion,
+  });
+
+  if (zipBytes.length > options.maxArchiveBytes) {
+    notes.push(`archive file exceeds size limit (${options.maxArchiveBytes} bytes): ${zipBytes.length} bytes`);
+    return done("UNSAFE_ARCHIVE");
+  }
+
+  let members: ZipMember[];
+  try {
+    members = readCentralDirectory(zipBytes);
+  } catch (exc) {
+    notes.push(`unreadable archive: ${(exc as Error).message}`);
+    return done("MALFORMED_BUNDLE");
+  }
+  if (members.length > options.maxEntries) {
+    notes.push(`archive exceeds ${options.maxEntries} entries`);
+    return done("UNSAFE_ARCHIVE");
+  }
+
+  const byName = new Map<string, ZipMember>();
+  let totalUncompressed = 0;
+  for (const member of members) {
+    if (byName.has(member.name)) {
+      notes.push(`duplicate archive member: ${JSON.stringify(member.name)}`);
+      return done("UNSAFE_ARCHIVE");
+    }
+    byName.set(member.name, member);
+    const reason = memberNameIsSafe(member.name);
+    if (reason !== null) {
+      notes.push(reason);
+      return done("UNSAFE_ARCHIVE");
+    }
+    if (isSymlink(member)) {
+      notes.push(`symlink archive member: ${member.name}`);
+      return done("UNSAFE_ARCHIVE");
+    }
+    totalUncompressed += member.data.length;
+    if (member.data.length > options.maxSingleMemberBytes) {
+      notes.push(`archive member exceeds size limit: ${member.name}`);
+      return done("UNSAFE_ARCHIVE");
+    }
+  }
+  if (totalUncompressed > options.maxTotalUncompressedBytes) {
+    notes.push("archive exceeds total uncompressed size limit");
+    return done("UNSAFE_ARCHIVE");
+  }
+
+  const manifestMember = byName.get("manifest.json");
+  if (!manifestMember) {
+    notes.push("manifest.json is missing");
+    return done("MALFORMED_BUNDLE");
+  }
+  let manifest: any;
+  try {
+    manifest = JSON.parse(manifestMember.data.toString("utf8"));
+  } catch (exc) {
+    notes.push(`manifest.json is not valid JSON: ${(exc as Error).message}`);
+    return done("MALFORMED_BUNDLE");
+  }
+  const specVersion = typeof manifest?.bundle_spec_version === "string" ? manifest.bundle_spec_version : null;
+  if (specVersion !== SPEC_VERSION) {
+    notes.push(`unsupported bundle_spec_version: ${JSON.stringify(specVersion)}`);
+    return done("UNSUPPORTED_SPEC_VERSION", specVersion);
+  }
+
+  const declared: { path: string; sha256: string; size_bytes: number }[] = Array.isArray(manifest?.files)
+    ? manifest.files
+    : [];
+  const declaredNames = new Set(declared.map((f) => String(f.path)));
+  // Envelope members: manifest.json is generated by the builder (it can never
+  // list itself), and the signature members are the DSSE-style envelope.
+  const envelopeMembers = new Set(["manifest.json", SIGNATURE_MEMBER, "signatures/key-info.json"]);
+
+  const missing = declared.filter((f) => !byName.has(f.path)).map((f) => f.path);
+  const unexpected = [...byName.keys()].filter((n) => !declaredNames.has(n) && !envelopeMembers.has(n));
+  if (missing.length > 0) {
+    notes.push(`missing members: ${missing.join(", ")}`);
+    return done("MISSING_FILE");
+  }
+  if (unexpected.length > 0) {
+    notes.push(`unexpected members: ${unexpected.join(", ")}`);
+    return done("UNEXPECTED_FILE");
+  }
+
+  for (const file of declared) {
+    const data = byName.get(file.path)!.data;
+    const digest = createHash("sha256").update(data).digest("hex");
+    if (digest !== String(file.sha256).toLowerCase() || data.length !== file.size_bytes) {
+      notes.push(`digest mismatch: ${file.path}`);
+      return done("HASH_MISMATCH");
+    }
+  }
+
+  const signatureMember = byName.get(SIGNATURE_MEMBER);
+  if (signatureMember) {
+    if (!trustedKeys || trustedKeys.length === 0) {
+      notes.push("bundle is signed but no caller trust root was supplied");
+      return done("SIGNATURE_KEY_UNKNOWN");
+    }
+    const signature = signatureMember.data;
+    const verified = trustedKeys.some((key) => {
+      try {
+        return cryptoVerify(null, manifestMember.data, createPublicKey(key.public_key_pem), signature);
+      } catch {
+        return false;
+      }
+    });
+    if (!verified) {
+      notes.push("signature is cryptographically invalid against supplied trust roots");
+      return done("SIGNATURE_INVALID");
+    }
+    notes.push("signature verified against a supplied trusted key");
+    return done("VALID_SIGNED", specVersion);
+  }
+  return done("VALID_UNSIGNED", specVersion);
+}

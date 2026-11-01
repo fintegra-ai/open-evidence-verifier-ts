@@ -1,0 +1,6 @@
+[
+  {
+    "key_id": "conformance-test-key",
+    "public_key_pem": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAZHQFbcEU4SxGXn6EY0Xz6By9k70sQUa2DxU+mqfPgFc=\n-----END PUBLIC KEY-----\n"
+  }
+]

@@ -1,0 +1,122 @@
+{
+ "generator": "python jcs (RFC 8785) via open-evidence-verification venv",
+ "pairs": [
+  {
+   "input": {
+    "b": 2,
+    "a": 1
+   },
+   "expected": "{\"a\":1,\"b\":2}"
+  },
+  {
+   "input": {
+    "ü": "é",
+    "A": "a",
+    "a": "A",
+    "\u0001": "ctl"
+   },
+   "expected": "{\"\\u0001\":\"ctl\",\"A\":\"a\",\"a\":\"A\",\"ü\":\"é\"}"
+  },
+  {
+   "input": [
+    1,
+    2,
+    3,
+    [
+     4,
+     {
+      "x": null,
+      "y": true,
+      "z": false
+     }
+    ]
+   ],
+   "expected": "[1,2,3,[4,{\"x\":null,\"y\":true,\"z\":false}]]"
+  },
+  {
+   "input": {
+    "quote": "say \"hi\"",
+    "backslash": "a\\b",
+    "newline": "l1\nl2",
+    "tab": "\t"
+   },
+   "expected": "{\"backslash\":\"a\\\\b\",\"newline\":\"l1\\nl2\",\"quote\":\"say \\\"hi\\\"\",\"tab\":\"\\t\"}"
+  },
+  {
+   "input": {
+    "emoji": "🌱",
+    "cjk": "数据",
+    "combining": "é"
+   },
+   "expected": "{\"cjk\":\"数据\",\"combining\":\"é\",\"emoji\":\"🌱\"}"
+  },
+  {
+   "input": {
+    "big": 9007199254740991,
+    "neg": -9007199254740991,
+    "zero": 0,
+    "neg0": 0
+   },
+   "expected": "{\"big\":9007199254740991,\"neg\":-9007199254740991,\"neg0\":0,\"zero\":0}"
+  },
+  {
+   "input": {},
+   "expected": "{}"
+  },
+  {
+   "input": [],
+   "expected": "[]"
+  },
+  {
+   "input": "",
+   "expected": "\"\""
+  },
+  {
+   "input": {
+    "nested": {
+     "deeper": {
+      "deepest": [
+       {
+        "k": "v"
+       }
+      ]
+     }
+    }
+   },
+   "expected": "{\"nested\":{\"deeper\":{\"deepest\":[{\"k\":\"v\"}]}}}"
+  },
+  {
+   "input": {
+    "numbers": [
+     0,
+     -1,
+     1,
+     10,
+     1.0,
+     255,
+     65535
+    ]
+   },
+   "expected": "{\"numbers\":[0,-1,1,10,1,255,65535]}"
+  },
+  {
+   "input": {
+    "empty-key": "",
+    "key": ""
+   },
+   "expected": "{\"empty-key\":\"\",\"key\":\"\"}"
+  },
+  {
+   "input": "top-level string",
+   "expected": "\"top-level string\""
+  },
+  {
+   "input": 42,
+   "expected": "42"
+  },
+  {
+   "input": true,
+   "expected": "true"
+  }
+ ]
+}

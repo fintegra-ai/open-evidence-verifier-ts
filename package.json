@@ -1,0 +1,14 @@
+{
+  "name": "oept-verifier-ts",
+  "version": "0.1.0",
+  "private": true,
+  "description": "TypeScript verifier slice 1 (Faz D): OEPT bundle verification - ZIP + JCS + Ed25519 + OEVP vector contract. Working npm name; final name is an owner decision.",
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/"
+  },
+  "devDependencies": {},
+  "engines": {
+    "node": ">=23.6"
+  }
+}
