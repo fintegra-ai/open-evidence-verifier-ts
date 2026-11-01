@@ -28,4 +28,4 @@ Prints one JSON object per the external-verifier contract:
 - Receipt authenticity is NOT established here — that is
   `oev receipt verify` with caller-pinned keys (OEVP).
 - Rules are never re-executed; replay safety is digest/pinning only.
-- npm publication and the final package name are pending owner decisions.
+- **Published to npm: [oept-verifier-ts@0.1.0](https://www.npmjs.com/package/oept-verifier-ts)** (2026-11-01, maintainer fintegraai). Trusted Publishing workflow (`npm-publish.yml`) is in place for CI publishes.
