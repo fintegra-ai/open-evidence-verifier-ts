@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 // External-verifier contract (Faz D): reads one OEVP conformance vector
 // input.json and prints the observation JSON for the runner. Supported
 // actions: "verify", "inspect_receipt", "reverify" (fail-closed prefix:

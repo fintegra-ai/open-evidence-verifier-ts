@@ -1,0 +1,28 @@
+name: npm publish (Trusted Publishing)
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+# npm Trusted Publishing (OIDC): no token stored. Configure ONCE on
+# npmjs.com for the package oept-verifier-ts: GitHub repository
+# fintegra-ai/open-evidence-verifier-ts, workflow file npm-publish.yml,
+# environment production. Then a v* tag (or a manual dispatch) publishes
+# with provenance.
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+      - run: npm install -g npm@latest
+      - run: npm publish --provenance --access public
